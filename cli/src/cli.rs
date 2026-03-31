@@ -50,6 +50,21 @@ pub enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
+
+    /// Deploy the Cloudflare Worker to your account
+    Deploy {
+        /// Cloudflare Account ID (or CF_ACCOUNT_ID env var)
+        #[arg(long)]
+        account_id: Option<String>,
+
+        /// Cloudflare API Token with Workers:Edit permission (or CF_API_TOKEN env var)
+        #[arg(long)]
+        api_token: Option<String>,
+
+        /// Worker script name
+        #[arg(long, default_value = "rs-rok")]
+        name: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -67,5 +82,16 @@ pub enum ConfigAction {
     SetEndpoint {
         /// The worker endpoint URL
         url: String,
+    },
+
+    /// Store Cloudflare credentials for deploy
+    SetCfCredentials {
+        /// Cloudflare Account ID
+        #[arg(long)]
+        account_id: String,
+
+        /// Cloudflare API Token with Workers:Edit permission
+        #[arg(long)]
+        api_token: String,
     },
 }

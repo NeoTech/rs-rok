@@ -9,6 +9,12 @@
 worker-wasm/pkg/
 worker/pkg/
 
+# Worker bundle (build artifact embedded in CLI binary)
+worker/dist/
+cli/src/embedded/*.js
+cli/src/embedded/*.wasm
+cli/src/embedded/wasm_module_name.txt
+
 # Node / Bun
 node_modules/
 worker/node_modules/

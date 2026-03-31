@@ -46,3 +46,9 @@ Rules and patterns to follow for the rs-rok project. Updated after corrections o
 - **Pattern**: Continuing to investigate a previously discussed issue after the user redirects the task.
 - **Problem**: Time is spent on unrelated fixes while the current blocker remains unresolved.
 - **Rule**: When the user narrows scope (for example, "focus on websocket/long-poll behavior"), immediately pivot and avoid additional work on out-of-scope issues unless explicitly requested.
+
+## 9. Never spawn `cargo` from inside `build.rs`
+
+- **Pattern**: `build.rs` runs `bun run build:bundle` which calls `wasm-pack build`, which internally runs `cargo build --target wasm32-unknown-unknown`.
+- **Problem**: The parent `cargo build` holds the Cargo build lock. The child `cargo` spawned by wasm-pack blocks waiting for the same lock → deadlock. Appears as `cargo build --release` "hanging forever".
+- **Rule**: If `build.rs` needs artifacts produced by another cargo build (e.g. WASM), check if pre-built artifacts exist and use them. Never unconditionally spawn a child cargo process. The worker bundle must be built as a separate step (`cd worker && bun run build:bundle`) before `cargo build`.

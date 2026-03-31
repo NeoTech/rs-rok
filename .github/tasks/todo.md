@@ -216,3 +216,96 @@ Requires a domain added to Cloudflare. `workers.dev` subdomains are not controll
   - Start `vite dev` on port 5173, run `rs-rok http 5173 --name myapp`
   - Open `https://myapp.yourdomain.com` in browser, verify all assets load
   - Test: browser devtools shows no 404s for JS/CSS assets
+
+---
+
+## Phase 9 -- Self-Deploy (Bundle Worker into CLI Binary)
+
+Purpose: embed the compiled Cloudflare Worker (JS bundle + WASM binary) directly into 
+the `rs-rok` CLI executable so users can run `rs-rok deploy` to self-host their own 
+worker instance via the Cloudflare REST API -- no manual wrangler usage required.
+
+### Definition of Done
+- `cargo build` automatically compiles the Worker and embeds artifacts in the binary
+- `rs-rok deploy --account-id <ID> --api-token <TOKEN>` deploys a working Worker
+- Cloudflare dashboard shows the Worker with both Durable Objects
+- `rs-rok http 8080` works against the self-deployed Worker endpoint
+- Credentials persist in `~/.rs-rok/cloudflare.json` for subsequent deploys
+
+### Phase 9a -- Build Infrastructure
+
+- [x] 9.1 Investigate wrangler dry-run output
+  - Run `cd worker && bun wrangler deploy --dry-run --outdir dist/` and inspect output
+  - Identify: JS bundle filename, WASM filename, how bundled JS imports the WASM
+  - This determines the multipart upload part names for the Cloudflare API
+  - Result: `index.js` + `{hash}-rs_rok_worker_wasm_bg.wasm`, JS imports WASM by hash-prefixed filename
+
+- [x] 9.2 Add `build:bundle` script to `worker/package.json`
+  - Script: `"build:bundle": "bun run build:wasm && wrangler deploy --dry-run --outdir dist"`
+  - Test: `cd worker && bun run build:bundle` produces `worker/dist/` with JS + WASM
+
+- [x] 9.3 Create `cli/build.rs`
+  - Runs `bun run build:bundle` in `../worker/` via `std::process::Command`
+  - Copies `worker/dist/*.js` -> `cli/src/embedded/worker.js`
+  - Copies `worker/dist/*.wasm` -> `cli/src/embedded/worker.wasm`
+  - Writes WASM module name to `cli/src/embedded/wasm_module_name.txt`
+  - Falls back to existing artifacts if bun/wrangler unavailable; panics if missing
+  - Emits `cargo:rerun-if-changed` for worker/protocol/worker-wasm source files
+  - Test: `cargo build -p rs-rok-cli` succeeds and produces embedded artifacts
+
+### Phase 9b -- Embed Artifacts
+
+- [x] 9.4 Create `cli/src/embedded/` directory
+  - Add `.gitkeep`; gitignore `cli/src/embedded/*.js`, `*.wasm`, `wasm_module_name.txt`
+  - Test: `git status` shows `.gitkeep` tracked, build artifacts ignored
+
+- [x] 9.5 Create `cli/src/worker_bundle.rs`
+  - `include_bytes!("embedded/worker.js")` + `include_bytes!("embedded/worker.wasm")`
+  - `include_str!("embedded/wasm_module_name.txt")` for dynamic WASM module name
+  - Constants for compatibility date (from wrangler.toml)
+  - Test: `cargo build -p rs-rok-cli` compiles with embedded artifacts
+
+### Phase 9c -- Cloudflare Credentials Config
+
+- [x] 9.6 Create `cli/src/cloudflare_config.rs`
+  - Struct: `CloudflareConfig { account_id, api_token }`
+  - Path: `~/.rs-rok/cloudflare.json`
+  - Load with env overrides: `CF_ACCOUNT_ID`, `CF_API_TOKEN`
+  - Save method (same pattern as `config.rs`)
+  - Test: `cargo test -p rs-rok-cli` -- 2 new tests pass (round-trip + missing file)
+
+### Phase 9d -- Deploy Module
+
+- [x] 9.7 Move `reqwest` from dev-dependencies to dependencies in `cli/Cargo.toml`
+  - Features: `["json", "multipart", "blocking"]` (blocking kept for integration test)
+  - Test: `cargo check -p rs-rok-cli` passes
+
+- [x] 9.8 Create `cli/src/deploy.rs`
+  - `pub async fn deploy_worker(cf, worker_name) -> Result<String, DeployError>`
+  - Builds metadata JSON: main_module, compatibility_date, compatibility_flags,
+    DO bindings (TUNNEL_REGISTRY, MODE_REGISTRY), migrations (v2, 2 steps)
+  - Builds multipart form: metadata + index.js + WASM file (dynamic name)
+  - PUT to `https://api.cloudflare.com/client/v4/accounts/{id}/workers/scripts/{name}`
+  - Enables workers.dev subdomain, fetches subdomain name, returns full URL
+  - Test: `cargo check -p rs-rok-cli` passes; manual test with real credentials pending
+
+### Phase 9e -- CLI Wiring
+
+- [x] 9.9 Add `Deploy` command to `cli/src/cli.rs`
+  - `rs-rok deploy [--account-id <ID>] [--api-token <TOKEN>] [--name rs-rok]`
+
+- [x] 9.10 Add `ConfigAction::SetCfCredentials` to `cli/src/cli.rs`
+  - `rs-rok config set-cf-credentials --account-id <ID> --api-token <TOKEN>`
+
+- [x] 9.11 Handle `Deploy` + `SetCfCredentials` in `cli/src/main.rs`
+  - Deploy: load CloudflareConfig, apply flag overrides, call deploy_worker,
+    on success save credentials + update settings.endpoint
+  - SetCfCredentials: save CloudflareConfig to disk
+
+### Phase 9f -- Verification
+
+- [ ] 9.12 Full verification (requires real Cloudflare credentials)
+  - `cargo build --release` embeds worker artifacts, binary size increases
+  - `rs-rok deploy --account-id $ID --api-token $TOKEN` deploys to Cloudflare
+  - Dashboard shows `rs-rok` Worker with TunnelRegistry + ModeRegistry DOs
+  - `rs-rok http 8080` against self-deployed endpoint works end-to-end
