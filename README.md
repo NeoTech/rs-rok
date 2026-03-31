@@ -99,6 +99,51 @@ The server side (`rs-rok tcp`) generates a single-use token that the client
 simultaneously, each getting an independent TCP stream multiplexed over the
 WebSocket tunnel.
 
+## Self-hosted (Docker)
+
+You can run the Worker locally using [workerd](https://github.com/cloudflare/workerd)
+(Cloudflare's open-source runtime) in a Docker container, without needing a
+Cloudflare account.
+
+### Prerequisites
+
+- Docker
+- Bun, Rust, and wasm-pack (for building the Worker bundle)
+
+### Build and run
+
+```bash
+# Build the Worker bundle and normalize the WASM filename
+cd worker && bun run build:workerd
+
+# Start the container (builds a ~35 MB image)
+docker compose up --build
+```
+
+The Worker is available at `http://localhost:8787`. Durable Object state is
+persisted to a Docker volume (`do-data`).
+
+### Point the CLI at the local instance
+
+```bash
+rs-rok config set-endpoint http://localhost:8787
+```
+
+Then use `rs-rok http`, `rs-rok tcp`, etc. as normal -- traffic routes through
+the local container instead of Cloudflare.
+
+### Stop the container
+
+```bash
+cd worker && docker compose down
+```
+
+To also remove persisted Durable Object data:
+
+```bash
+cd worker && docker compose down -v
+```
+
 ## Configuration
 
 Settings are stored in `~/.rs-rok/`:
