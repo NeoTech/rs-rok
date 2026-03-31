@@ -1,0 +1,25 @@
+name = "rs-rok-worker"
+main = "src/index.ts"
+compatibility_date = "2024-12-30"
+compatibility_flags = ["nodejs_compat"]
+
+# WASM module rules — import .wasm files as WebAssembly.Module
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]
+fallthrough = false
+
+# Durable Objects
+[durable_objects]
+bindings = [
+  { name = "TUNNEL_REGISTRY", class_name = "TunnelRegistry" },
+  { name = "MODE_REGISTRY", class_name = "ModeRegistry" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["TunnelRegistry"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["ModeRegistry"]

@@ -1,0 +1,19 @@
+[package]
+name = "rs-rok-mock-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Configurable echo HTTP server for rs-rok integration tests"
+
+[[bin]]
+name = "mock-service"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }

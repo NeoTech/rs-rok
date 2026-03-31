@@ -1,0 +1,11 @@
+entryPoints:
+  web:
+    address: ":9000"
+
+providers:
+  file:
+    filename: traefik-routes.yml
+    watch: true
+
+log:
+  level: INFO

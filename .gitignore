@@ -1,0 +1,40 @@
+# Build artifacts
+/target/
+**/target/
+
+# Rust
+**/*.rs.bk
+
+# WASM build output
+worker-wasm/pkg/
+worker/pkg/
+
+# Node / Bun
+node_modules/
+worker/node_modules/
+bun.lockb
+
+# Wrangler
+.wrangler/
+.dev.vars
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+
+# Executables
+*.exe*
+*.dll
+*.so
+*.dylib
+

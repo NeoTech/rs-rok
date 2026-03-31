@@ -1,0 +1,11 @@
+http:
+  routers:
+    mock:
+      rule: "PathPrefix(`/`)"
+      service: mock-service
+
+  services:
+    mock-service:
+      loadBalancer:
+        servers:
+          - url: "http://localhost:3000"

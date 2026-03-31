@@ -1,0 +1,13 @@
+{
+  "name": "rs-rok",
+  "private": true,
+  "scripts": {
+    "dev": "cd worker && bun run dev",
+    "build:wasm": "cd worker-wasm && wasm-pack build --target web --out-dir ../worker/pkg",
+    "test": "cargo test --workspace && cd worker && bun run test",
+    "test:e2e": "cargo build --workspace && cargo test -p rs-rok-cli --test tunnel_e2e -- --ignored",
+    "lint": "cargo clippy --workspace -- -D warnings && cd worker && bun run lint",
+    "fmt": "cargo fmt --all",
+    "fmt:check": "cargo fmt --all -- --check"
+  }
+}

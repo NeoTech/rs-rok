@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = [
+    "cli",
+    "protocol",
+    "worker-wasm",
+    "mock-service",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
