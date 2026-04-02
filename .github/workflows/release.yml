@@ -101,9 +101,9 @@ jobs:
             binary: rsrok
             use_cross: true
 
-          # Intel Mac (macOS 13 runner is still x86_64)
+          # Intel Mac — cross-compiled from the ARM runner (both SDKs ship with Xcode)
           - target: x86_64-apple-darwin
-            runner: macos-13
+            runner: macos-latest
             asset: rsrok-macos-x64
             binary: rsrok
             use_cross: false
