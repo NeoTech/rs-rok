@@ -1,0 +1,190 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── 1. Build the Worker bundle ────────────────────────────────────────────
+  # Runs once on Ubuntu; uploads:
+  #   • worker-dist   (dist/index.js + dist/worker.wasm)  ← injected into CLI builds
+  #   • rs-rok-workerd.zip                                ← self-host Docker bundle
+  build-worker:
+    name: Build worker bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo (wasm)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ubuntu-wasm-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install worker dependencies
+        working-directory: worker
+        run: bun install
+
+      - name: Build worker bundle (workerd target)
+        working-directory: worker
+        run: bun run build:workerd
+
+      # Upload just the compiled dist/ files so each CLI build can download
+      # them into worker/dist/ before running cargo build.
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: worker-dist
+          path: |
+            worker/dist/index.js
+            worker/dist/worker.wasm
+
+      # Package everything needed to run the Worker locally with Docker.
+      - name: Package self-host bundle
+        run: |
+          zip rs-rok-workerd.zip \
+            worker/dist/index.js \
+            worker/dist/worker.wasm \
+            worker/workerd.capnp \
+            worker/docker-entrypoint.sh \
+            worker/Dockerfile.workerd \
+            worker/docker-compose.yml
+
+      - name: Upload workerd zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: rs-rok-workerd
+          path: rs-rok-workerd.zip
+
+  # ── 2. Build CLI binaries ─────────────────────────────────────────────────
+  build-cli:
+    name: Build CLI (${{ matrix.target }})
+    needs: build-worker
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            asset: rsrok-windows-x64.exe
+            binary: rsrok.exe
+            use_cross: false
+
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            asset: rsrok-linux-x64
+            binary: rsrok
+            use_cross: false
+
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            asset: rsrok-linux-arm64
+            binary: rsrok
+            use_cross: true
+
+          # Intel Mac (macOS 13 runner is still x86_64)
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            asset: rsrok-macos-x64
+            binary: rsrok
+            use_cross: false
+
+          # Apple Silicon (macos-latest = macOS 15 ARM runner)
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            asset: rsrok-macos-arm64
+            binary: rsrok
+            use_cross: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Place the pre-built dist/ files where build.rs expects them.
+      - name: Download worker dist
+        uses: actions/download-artifact@v4
+        with:
+          name: worker-dist
+          path: worker/dist
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install cross (for cross-compilation)
+        if: matrix.use_cross
+        run: cargo install cross --locked
+
+      - name: Build CLI
+        shell: bash
+        run: |
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            cross build --release --package rs-rok-cli --target ${{ matrix.target }}
+          else
+            cargo build --release --package rs-rok-cli --target ${{ matrix.target }}
+          fi
+
+      - name: Copy binary to asset name
+        shell: bash
+        run: cp target/${{ matrix.target }}/release/${{ matrix.binary }} ${{ matrix.asset }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+  # ── 3. Publish GitHub Release ─────────────────────────────────────────────
+  release:
+    name: Publish GitHub Release
+    needs: [build-cli, build-worker]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/rsrok-windows-x64.exe
+            artifacts/rsrok-linux-x64
+            artifacts/rsrok-linux-arm64
+            artifacts/rsrok-macos-x64
+            artifacts/rsrok-macos-arm64
+            artifacts/rs-rok-workerd.zip
