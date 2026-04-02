@@ -30,6 +30,16 @@ async fn main() {
 
     let args = Args::parse();
 
+    println!();
+    println!("mock-service-http  http://127.0.0.1:{}", args.port);
+    println!();
+    println!("  GET  /echo            echo request headers (JSON)");
+    println!("  POST /echo            echo request headers + body (JSON)");
+    println!("  GET  /status/{{code}}  respond with given HTTP status code");
+    println!("  GET  /slow/{{ms}}      delay response by N milliseconds");
+    println!("  GET  /health          health check -> 200 ok");
+    println!();
+
     let app = Router::new()
         .route("/echo", get(echo_get).post(echo_post))
         .route("/status/{code}", get(status_handler))

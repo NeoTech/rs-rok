@@ -43,7 +43,7 @@ interface PendingRequest {
 type Mode = "root" | "named";
 
 type SocketAttachment =
-  | { kind: "cli"; mode: Mode }
+  | { kind: "cli"; mode: Mode; requiredAuthToken: string }
   | { kind: "public"; wsId: number }
   | { kind: "tcp"; streamId: number };
 
@@ -171,12 +171,16 @@ export class TunnelRegistry implements DurableObject {
     if (this.tunnelSlug) await this.state.storage.put("tunnelSlug", this.tunnelSlug);
 
     const mode: Mode = this.tunnelSlug === "__root__" ? "root" : "named";
+    // Read the required token from the _rra query param injected by the main Worker.
+    // Using a URL param (not a cloned Request) is the only reliable way to pass
+    // extra data on a WebSocket upgrade without risking CF Workers runtime errors.
+    const requiredAuthToken = url.searchParams.get("_rra") ?? this.env.AUTH_TOKEN ?? "";
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
     this.state.acceptWebSocket(server, ["cli"]);
-    this.setSocketAttachment(server, { kind: "cli", mode });
+    this.setSocketAttachment(server, { kind: "cli", mode, requiredAuthToken });
     this.cliSocket = server;
 
     return new Response(null, { status: 101, webSocket: client });
@@ -473,6 +477,30 @@ export class TunnelRegistry implements DurableObject {
 
   private handleRegister(ws: WebSocket, frame: ParsedFrame): void {
     const tunnelId = frame.tunnelId ?? new Uint8Array(16);
+
+    // Read the required token from the WS attachment set during the CLI upgrade.
+    // The attachment was populated from the x-rs-rok-auth header injected by the
+    // main Worker, which always reads from fresh env (no stale-instance problem).
+    const attachment = this.getSocketAttachment(ws);
+    if (!attachment || attachment.kind !== "cli") {
+      // Attachment missing — fail closed rather than allowing an unauthenticated connection.
+      ws.send(encodeErrorFrame(frame.requestId, 500, "internal error: missing attachment"));
+      ws.close(1011, "internal error");
+      return;
+    }
+    const requiredToken = attachment.requiredAuthToken;
+    if (requiredToken.length > 0) {
+      // A token is required — verify what the CLI sent.
+      // The CLI sends a zero-padded 32-byte array; trim trailing null bytes.
+      const sentToken = new TextDecoder()
+        .decode(frame.authToken ?? new Uint8Array(0))
+        .replace(/\0+$/, "");
+      if (sentToken !== requiredToken) {
+        ws.send(encodeErrorFrame(frame.requestId, 401, "unauthorized"));
+        ws.close(1008, "unauthorized");
+        return;
+      }
+    }
 
     // Root tunnel lives at the worker origin root; named tunnels get a path prefix
     const origin = this.workerOrigin ?? "";

@@ -4,7 +4,7 @@ members = [
     "cli",
     "protocol",
     "worker-wasm",
-    "mock-service",
+    "mock-service-http",
     "mock-service-https",
     "mock-service-tcp",
 ]

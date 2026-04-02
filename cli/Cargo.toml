@@ -6,7 +6,7 @@ license.workspace = true
 description = "CLI tunnel client for rs-rok"
 
 [[bin]]
-name = "rs-rok"
+name = "rsrok"
 path = "src/main.rs"
 
 [dependencies]

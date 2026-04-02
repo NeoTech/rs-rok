@@ -3,6 +3,7 @@ mod cloudflare_config;
 mod config;
 mod deploy;
 mod proxy;
+mod saved_tunnels;
 mod tcp_client;
 mod tui;
 mod tunnel;
@@ -96,29 +97,30 @@ async fn main() {
         Command::Http {
             port, host, name,
         } => {
-            start_tunnel(TunnelType::Http, port, &host, name, &config_path).await;
+            start_tunnel(TunnelType::Http, port, &host, name, cli.profile.as_deref(), &config_path).await;
         }
         Command::Https {
             port, host, name,
         } => {
-            start_tunnel(TunnelType::Https, port, &host, name, &config_path).await;
+            start_tunnel(TunnelType::Https, port, &host, name, cli.profile.as_deref(), &config_path).await;
         }
         Command::Deploy {
             account_id,
             api_token,
+            auth_token,
             name,
         } => {
-            deploy_worker(account_id, api_token, &name, &config_path).await;
+            deploy_worker(account_id, api_token, auth_token, &name, &config_path).await;
         }
         Command::Tcp {
             port, host, name,
         } => {
-            start_tcp_tunnel(port, &host, name, &config_path).await;
+            start_tcp_tunnel(port, &host, name, cli.profile.as_deref(), &config_path).await;
         }
         Command::Connect {
             slug, token, port, host,
         } => {
-            start_tcp_client(&slug, &token, port, &host, &config_path).await;
+            start_tcp_client(&slug, &token, port, &host, cli.profile.as_deref(), &config_path).await;
         }
     }
 }
@@ -133,22 +135,27 @@ fn apply_profile_flag(settings: &mut Settings, profile_name: Option<&str>) {
     }
 }
 
+/// Load settings from disk, apply the --profile flag, and return the active profile.
+fn load_active_profile(config_path: &std::path::Path, profile_name: Option<&str>) -> config::Profile {
+    let mut settings = Settings::load(config_path);
+    apply_profile_flag(&mut settings, profile_name);
+    settings.active_profile().clone()
+}
+
 async fn start_tunnel(
     tunnel_type: TunnelType,
     port: u16,
     host: &str,
     name: Option<String>,
+    profile: Option<&str>,
     config_path: &std::path::Path,
 ) {
-    let mut settings = Settings::load(config_path);
-    apply_profile_flag(&mut settings, None);
-    let profile = settings.active_profile();
-    let auth_token = profile.auth_token.clone().unwrap_or_default();
+    let active = load_active_profile(config_path, profile);
     let local_addr = format!("{host}:{port}");
 
     let tunnel_config = tunnel::TunnelConfig {
-        endpoint: profile.endpoint.clone(),
-        auth_token,
+        endpoint: active.endpoint.clone(),
+        auth_token: active.auth_token.clone().unwrap_or_default(),
         tunnel_type,
         local_addr,
         name,
@@ -166,14 +173,12 @@ async fn start_tcp_tunnel(
     port: u16,
     host: &str,
     name: Option<String>,
+    profile: Option<&str>,
     config_path: &std::path::Path,
 ) {
     use rand::Rng;
 
-    let mut settings = Settings::load(config_path);
-    apply_profile_flag(&mut settings, None);
-    let profile = settings.active_profile();
-    let auth_token = profile.auth_token.clone().unwrap_or_default();
+    let active = load_active_profile(config_path, profile);
     let local_addr = format!("{host}:{port}");
 
     // Generate a random 32-char hex token
@@ -188,8 +193,8 @@ async fn start_tcp_tunnel(
     println!();
 
     let tunnel_config = tunnel::TunnelConfig {
-        endpoint: profile.endpoint.clone(),
-        auth_token,
+        endpoint: active.endpoint.clone(),
+        auth_token: active.auth_token.clone().unwrap_or_default(),
         tunnel_type: TunnelType::Tcp,
         local_addr,
         name,
@@ -208,13 +213,13 @@ async fn start_tcp_client(
     token: &str,
     port: u16,
     host: &str,
+    profile: Option<&str>,
     config_path: &std::path::Path,
 ) {
-    let mut settings = Settings::load(config_path);
-    apply_profile_flag(&mut settings, None);
+    let active = load_active_profile(config_path, profile);
 
     let client_config = tcp_client::TcpClientConfig {
-        endpoint: settings.active_profile().endpoint.clone(),
+        endpoint: active.endpoint.clone(),
         slug: slug.to_string(),
         token: token.to_string(),
         local_addr: format!("{host}:{port}"),
@@ -229,11 +234,12 @@ async fn start_tcp_client(
 async fn deploy_worker(
     account_id: Option<String>,
     api_token: Option<String>,
+    auth_token: Option<String>,
     worker_name: &str,
     config_path: &std::path::Path,
 ) {
     let cf_path = CloudflareConfig::config_path();
-    let cf_cfg = CloudflareConfig::load(&cf_path);
+    let mut cf_cfg = CloudflareConfig::load(&cf_path);
     let mut cf = cf_cfg.first().cloned().unwrap_or(crate::cloudflare_config::CfAccount {
         name: String::new(),
         account_id: String::new(),
@@ -248,6 +254,16 @@ async fn deploy_worker(
         cf.api_token = tok;
     }
 
+    // Load settings once — used both to resolve auth_token fallback and to save result.
+    let mut settings = Settings::load(config_path);
+
+    // Use CLI flag if given, otherwise fall back to active profile's auth_token.
+    let effective_auth_token = if auth_token.as_deref().map(|s| !s.is_empty()).unwrap_or(false) {
+        auth_token
+    } else {
+        settings.active_profile().auth_token.clone()
+    };
+
     if cf.account_id.is_empty() {
         error!("Cloudflare Account ID required. Provide --account-id or set CF_ACCOUNT_ID, or run: rs-rok config set-cf-credentials");
         std::process::exit(1);
@@ -259,22 +275,21 @@ async fn deploy_worker(
 
     println!("Deploying worker '{worker_name}'...");
 
-    match deploy::deploy_worker(&cf, worker_name).await {
+    match deploy::deploy_worker(&cf, worker_name, effective_auth_token.as_deref()).await {
         Ok(url) => {
             println!("Worker deployed successfully!");
             println!("URL: {url}");
 
-            // Save credentials for future deploys
-            let save_cfg = CloudflareConfig { accounts: vec![cf.clone()] };
-            if let Err(e) = save_cfg.save(&cf_path) {
+            // Persist CF credentials via shared upsert (no duplicate add).
+            cf_cfg.upsert_account(cf);
+            if let Err(e) = cf_cfg.save(&cf_path) {
                 error!("warning: could not save credentials: {e}");
             }
 
-            // Update endpoint in active profile
-            let mut settings = Settings::load(config_path);
-            settings.active_profile_mut().endpoint = url.clone();
+            // Apply deploy result to active profile via shared method, then save.
+            settings.apply_deploy_result(&url, effective_auth_token.as_deref());
             if let Err(e) = settings.save(config_path) {
-                error!("warning: could not update endpoint in settings: {e}");
+                error!("warning: could not update settings: {e}");
             } else {
                 println!("Endpoint updated to {url}");
             }

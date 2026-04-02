@@ -13,6 +13,7 @@ mod overlays {
     pub mod new_tunnel;
     pub mod profiles;
     pub mod settings;
+    pub mod tunnel_manager;
 }
 
 use std::path::PathBuf;
@@ -36,6 +37,19 @@ pub async fn run(settings_path: PathBuf, profile: Option<String>) -> Result<(), 
         }
     }
     let mut app = App::new(settings, settings_path.clone());
+
+    // Restore tunnels from the previous session.
+    let saved = crate::saved_tunnels::load(&app.saved_tunnels_path);
+    for entry in saved {
+        if let Some(config) = entry.to_tunnel_config(&app.settings) {
+            let profile_name = Some(entry.profile.clone());
+            if entry.state == crate::saved_tunnels::SavedTunnelState::Running {
+                app.spawn_tunnel(config, profile_name);
+            } else {
+                app.add_stopped_tunnel(config, profile_name);
+            }
+        }
+    }
 
     // Setup terminal
     terminal::enable_raw_mode()?;
@@ -62,6 +76,9 @@ pub async fn run(settings_path: PathBuf, profile: Option<String>) -> Result<(), 
         DisableMouseCapture
     )?;
     terminal.show_cursor()?;
+
+    // Persist tunnel states before stopping so state=running/stopped is recorded correctly.
+    app.persist_tunnels();
 
     // Stop all running tunnels
     app.stop_all_tunnels();
@@ -111,8 +128,8 @@ async fn run_loop(
                     Action::Quit => return Ok(()),
                     Action::OpenOverlay(overlay) => app.overlay = Some(overlay),
                     Action::CloseOverlay => app.overlay = None,
-                    Action::SpawnTunnel(config) => {
-                        app.spawn_tunnel(config);
+                    Action::SpawnTunnel(config, profile_name) => {
+                        app.spawn_tunnel(config, Some(profile_name));
                         app.overlay = None;
                     }
                     Action::StopTunnel(idx) => app.stop_tunnel(idx),
@@ -146,6 +163,7 @@ async fn run_loop(
                         worker_name,
                         account_id,
                         api_token,
+                        auth_token,
                     } => {
                         let cf_account = crate::cloudflare_config::CfAccount {
                             name: String::new(),
@@ -155,6 +173,8 @@ async fn run_loop(
 
                         let (result_tx, result_rx) = tokio::sync::mpsc::unbounded_channel();
                         app.deploy_result_rx = Some(result_rx);
+                        // Store the CF account so the result handler can persist it.
+                        app.deploy_cf_account = Some(cf_account.clone());
 
                         // Show deploying status in the overlay (keep it open)
                         if let Some(form) = &mut app.deploy_form {
@@ -163,7 +183,7 @@ async fn run_loop(
 
                         let name = worker_name.clone();
                         tokio::spawn(async move {
-                            let outcome = crate::deploy::deploy_worker(&cf_account, &name).await;
+                            let outcome = crate::deploy::deploy_worker(&cf_account, &name, auth_token.as_deref()).await;
                             let msg = outcome.map_err(|e| e.to_string());
                             let _ = result_tx.send(msg);
                         });
@@ -236,21 +256,23 @@ async fn run_loop(
         if let Some(rx) = &mut app.deploy_result_rx {
             match rx.try_recv() {
                 Ok(Ok(url)) => {
-                    // Success — upsert profile and close overlay
-                    let name = app.deploy_form.as_ref().map(|f| f.worker_name.clone()).unwrap_or_default();
-                    let mut settings = Settings::load(&app.settings_path);
-                    let idx = if let Some(i) = settings.profiles.iter().position(|p| p.name == name) {
-                        settings.profiles[i].endpoint = url;
-                        i
-                    } else {
-                        let new_profile = crate::config::Profile::new(&name, url);
-                        let i = settings.profiles.len();
-                        settings.profiles.push(new_profile);
-                        i
-                    };
-                    settings.switch_active(idx);
-                    let _ = settings.save(&app.settings_path);
-                    app.settings = settings;
+                    // Success — apply result to in-memory settings via shared method,
+                    // save through the canonical app.save_settings() path, and
+                    // also persist the CF account that was used (TUI previously skipped this).
+                    let auth_token = app.deploy_form.as_ref().and_then(|f| {
+                        if f.auth_token.is_empty() { None } else { Some(f.auth_token.clone()) }
+                    });
+                    app.settings.apply_deploy_result(&url, auth_token.as_deref());
+                    let _ = app.save_settings();
+
+                    // Persist CF credentials used for this deploy.
+                    if let Some(cf_account) = app.deploy_cf_account.take() {
+                        let cf_path = crate::cloudflare_config::CloudflareConfig::config_path();
+                        let mut cf_cfg = crate::cloudflare_config::CloudflareConfig::load(&cf_path);
+                        cf_cfg.upsert_account(cf_account);
+                        let _ = cf_cfg.save(&cf_path);
+                    }
+
                     app.deploy_result_rx = None;
                     app.overlay = None;
                 }

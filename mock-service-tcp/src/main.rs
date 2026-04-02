@@ -29,6 +29,15 @@ async fn main() {
         .init();
 
     let args = Args::parse();
+
+    println!();
+    println!("mock-service-tcp  127.0.0.1:{}  (mode: {})", args.port, args.mode);
+    println!();
+    println!("  Modes:");
+    println!("    echo    return received bytes as-is");
+    println!("    prefix  prepend \"ECHO: \" to each newline-terminated line");
+    println!();
+
     let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
     let listener = TcpListener::bind(addr).await.expect("failed to bind");
 

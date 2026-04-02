@@ -6,6 +6,11 @@
 # The Worker will be available at http://localhost:8787
 # Point the CLI at it:
 #   rs-rok config set-endpoint http://localhost:8787
+#
+# To enable auth token enforcement, set AUTH_TOKEN in a .env file:
+#   echo 'AUTH_TOKEN=mysecret' > worker/.env
+# or pass it directly:
+#   AUTH_TOKEN=mysecret docker compose -f worker/docker-compose.yml up --build
 
 services:
   workerd:
@@ -16,6 +21,8 @@ services:
       - "8787:8787"
     volumes:
       - do-data:/worker/do-data
+    environment:
+      - AUTH_TOKEN=${AUTH_TOKEN:-}
     restart: unless-stopped
 
 volumes:

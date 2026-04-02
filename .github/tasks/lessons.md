@@ -52,3 +52,9 @@ Rules and patterns to follow for the rs-rok project. Updated after corrections o
 - **Pattern**: `build.rs` runs `bun run build:bundle` which calls `wasm-pack build`, which internally runs `cargo build --target wasm32-unknown-unknown`.
 - **Problem**: The parent `cargo build` holds the Cargo build lock. The child `cargo` spawned by wasm-pack blocks waiting for the same lock → deadlock. Appears as `cargo build --release` "hanging forever".
 - **Rule**: If `build.rs` needs artifacts produced by another cargo build (e.g. WASM), check if pre-built artifacts exist and use them. Never unconditionally spawn a child cargo process. The worker bundle must be built as a separate step (`cd worker && bun run build:bundle`) before `cargo build`.
+## 10. Deploy must write ALL changed fields back to the active profile
+
+- **Pattern**: Adding a new `auth_token` parameter to deploy, updating `endpoint` in settings after deploy, but forgetting to also persist `auth_token`.
+- **Problem**: `settings.json` stays at `"auth_token": null` after a deploy that specified a token.
+- **Second pattern (TUI only)**: Upsert-by-worker-name — trying to find an existing profile by matching `worker_name` (the CF worker script name) against profile names. These are unrelated concepts; worker_name never matches → a new duplicate profile is created.
+- **Rule**: After deploy, always update the **active profile** directly (`settings.active_profile_mut()`). Write every field that the deploy action changed (endpoint AND auth_token). Never try to match a CF worker name against settings profile names.

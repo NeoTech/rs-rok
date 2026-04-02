@@ -5,6 +5,7 @@
 #
 # Build:  docker build -f worker/Dockerfile.workerd -t rs-rok-workerd worker/
 # Run:    docker run --rm -p 8787:8787 rs-rok-workerd
+# Run with auth: docker run --rm -p 8787:8787 -e AUTH_TOKEN=mytoken rs-rok-workerd
 
 FROM jacoblincool/workerd:latest
 
@@ -13,9 +14,10 @@ WORKDIR /worker
 COPY dist/index.js dist/index.js
 COPY dist/worker.wasm dist/worker.wasm
 COPY workerd.capnp worker.capnp
+COPY docker-entrypoint.sh /docker-entrypoint.sh
 
-RUN mkdir -p do-data
+RUN chmod +x /docker-entrypoint.sh && mkdir -p do-data
 
 EXPOSE 8787
 
-ENTRYPOINT ["/workerd", "serve", "worker.capnp", "--verbose"]
+ENTRYPOINT ["/docker-entrypoint.sh"]

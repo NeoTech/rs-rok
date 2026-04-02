@@ -65,6 +65,10 @@ pub enum Command {
         #[arg(long)]
         api_token: Option<String>,
 
+        /// Optional auth token to protect tunnel registration (stored as CF secret AUTH_TOKEN)
+        #[arg(long)]
+        auth_token: Option<String>,
+
         /// Worker script name
         #[arg(long, default_value = "rs-rok")]
         name: String,

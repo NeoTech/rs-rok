@@ -229,6 +229,19 @@ impl Settings {
         }
     }
 
+    /// Apply a successful deploy result to the active profile.
+    /// Updates endpoint and, if a non-empty token is given, auth_token.
+    /// Does NOT save to disk — call `save()` after.
+    pub fn apply_deploy_result(&mut self, url: &str, auth_token: Option<&str>) {
+        let profile = self.active_profile_mut();
+        profile.endpoint = url.to_string();
+        if let Some(tok) = auth_token {
+            if !tok.is_empty() {
+                profile.auth_token = Some(tok.to_string());
+            }
+        }
+    }
+
 }
 
 #[cfg(test)]

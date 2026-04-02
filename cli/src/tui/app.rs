@@ -24,6 +24,7 @@ pub enum Overlay {
     Profiles,
     Deploy,
     EndpointTest,
+    TunnelManager,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +49,8 @@ pub struct TunnelHandle {
     pub test_result: Option<EndpointTestResult>,
     /// Base config used to restart this tunnel (events_tx is always None here).
     pub base_config: TunnelConfig,
+    /// Profile name this tunnel was created with (used for persistence).
+    pub profile_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -301,6 +304,9 @@ impl SettingsForm {
 #[derive(Debug, Clone)]
 pub struct DeployForm {
     pub worker_name: String,
+    pub auth_token: String,
+    /// 0 = worker name field, 1 = auth token field
+    pub focused_field: usize,
     pub cf_accounts: Vec<crate::cloudflare_config::CfAccount>,
     pub selected_account: usize,
     pub status_message: Option<String>,
@@ -308,12 +314,15 @@ pub struct DeployForm {
 
 impl DeployForm {
     /// Load CF accounts from cloudflare.json.
-    pub fn new() -> Self {
+    /// `auth_token` pre-populates from the active profile.
+    pub fn new(auth_token: String) -> Self {
         let cf_path = crate::cloudflare_config::CloudflareConfig::config_path();
         let cf = crate::cloudflare_config::CloudflareConfig::load(&cf_path);
 
         Self {
             worker_name: String::new(),
+            auth_token,
+            focused_field: 0,
             cf_accounts: cf.accounts,
             selected_account: 0,
             status_message: None,
@@ -402,6 +411,7 @@ impl EndpointTestForm {
 pub struct App {
     pub settings: Settings,
     pub settings_path: PathBuf,
+    pub saved_tunnels_path: PathBuf,
     pub tunnels: Vec<TunnelHandle>,
     pub selected_tunnel: usize,
     pub focus: Focus,
@@ -414,13 +424,19 @@ pub struct App {
     pub endpoint_test_form: Option<EndpointTestForm>,
     /// Receives the result of an in-progress deploy (Ok(url) or Err(message)).
     pub deploy_result_rx: Option<tokio::sync::mpsc::UnboundedReceiver<Result<String, String>>>,
+    /// The CF account used for the in-progress deploy (needed to persist creds on success).
+    pub deploy_cf_account: Option<crate::cloudflare_config::CfAccount>,
+    /// Selected row in the Tunnel Manager overlay.
+    pub tunnel_manager_selected: usize,
 }
 
 impl App {
     pub fn new(settings: Settings, settings_path: PathBuf) -> Self {
+        let saved_tunnels_path = crate::saved_tunnels::config_path(&settings_path);
         Self {
             settings,
             settings_path,
+            saved_tunnels_path,
             tunnels: Vec::new(),
             selected_tunnel: 0,
             focus: Focus::List,
@@ -432,6 +448,8 @@ impl App {
             new_profile_input: None,
             endpoint_test_form: None,
             deploy_result_rx: None,
+            deploy_cf_account: None,
+            tunnel_manager_selected: 0,
         }
     }
 
@@ -448,7 +466,7 @@ impl App {
         }
     }
 
-    pub fn spawn_tunnel(&mut self, config: TunnelConfig) {
+    pub fn spawn_tunnel(&mut self, config: TunnelConfig, profile_name: Option<String>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let test_tx = tx.clone();
         let name = config
@@ -490,9 +508,48 @@ impl App {
             public_url: None,
             test_result: None,
             base_config,
+            profile_name,
         });
 
         self.selected_tunnel = self.tunnels.len() - 1;
+        self.persist_tunnels();
+    }
+
+    /// Add a tunnel in the stopped state without launching a live connection.
+    /// Used when restoring a session entry that was stopped at quit time.
+    pub fn add_stopped_tunnel(&mut self, config: TunnelConfig, profile_name: Option<String>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let test_tx = tx.clone();
+        let name = config
+            .name
+            .clone()
+            .unwrap_or_else(|| format!(":{}", config.local_addr.split(':').last().unwrap_or("?")));
+        let tunnel_type = config.tunnel_type;
+        let type_label = match tunnel_type {
+            rs_rok_protocol::TunnelType::Http => "HTTP",
+            rs_rok_protocol::TunnelType::Https => "HTTPS",
+            rs_rok_protocol::TunnelType::Tcp => "TCP",
+        };
+        let summary = format!("{} {}", type_label, config.local_addr);
+        // Spawn a no-op task just to satisfy the JoinHandle field.
+        let handle = tokio::spawn(async {});
+        self.tunnels.push(TunnelHandle {
+            name,
+            config_summary: summary,
+            status: TunnelStatus::Stopped,
+            tunnel_type,
+            events_rx: rx,
+            test_tx,
+            task_handle: handle,
+            logs: VecDeque::with_capacity(MAX_LOG_LINES),
+            scroll_offset: 0,
+            auto_scroll: true,
+            public_url: None,
+            test_result: None,
+            base_config: config,
+            profile_name,
+        });
+        // Don't call persist_tunnels here — caller handles batch restores.
     }
 
     pub fn restart_tunnel(&mut self, idx: usize) {
@@ -527,15 +584,51 @@ impl App {
         }
     }
 
+    /// Persist all current tunnels to `~/.rs-rok/tunnels.json`.
+    pub fn persist_tunnels(&self) {
+        let entries: Vec<crate::saved_tunnels::SavedTunnel> = self
+            .tunnels
+            .iter()
+            .filter_map(|t| {
+                let profile = t.profile_name.clone()?;
+                // Split "host:port" back into parts.
+                let (host, port_str) = t.base_config.local_addr.rsplit_once(':')?;
+                let port: u16 = port_str.parse().ok()?;
+                let state = if t.status == TunnelStatus::Stopped {
+                    crate::saved_tunnels::SavedTunnelState::Stopped
+                } else {
+                    crate::saved_tunnels::SavedTunnelState::Running
+                };
+                Some(crate::saved_tunnels::SavedTunnel {
+                    profile,
+                    tunnel_type: t.tunnel_type.into(),
+                    host: host.to_string(),
+                    port,
+                    state,
+                    name: t.base_config.name.clone(),
+                    tcp_token: t.base_config.tcp_token.clone(),
+                })
+            })
+            .collect();
+        crate::saved_tunnels::save(&self.saved_tunnels_path, &entries);
+    }
+
     pub fn delete_tunnel(&mut self, idx: usize) {
         if idx < self.tunnels.len() {
             self.tunnels[idx].task_handle.abort();
             self.tunnels.remove(idx);
             if self.tunnels.is_empty() {
                 self.selected_tunnel = 0;
-            } else if self.selected_tunnel >= self.tunnels.len() {
-                self.selected_tunnel = self.tunnels.len() - 1;
+                self.tunnel_manager_selected = 0;
+            } else {
+                if self.selected_tunnel >= self.tunnels.len() {
+                    self.selected_tunnel = self.tunnels.len() - 1;
+                }
+                if self.tunnel_manager_selected >= self.tunnels.len() {
+                    self.tunnel_manager_selected = self.tunnels.len() - 1;
+                }
             }
+            self.persist_tunnels();
         }
     }
 

@@ -44,6 +44,9 @@ const rsRokWorker :Workerd.Worker = (
     ( name = "MODE_REGISTRY",
       durableObjectNamespace = "ModeRegistry",
     ),
+    ( name = "AUTH_TOKEN",
+      text = "__AUTH_TOKEN__",
+    ),
   ],
 
   durableObjectNamespaces = [

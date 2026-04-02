@@ -35,7 +35,22 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         "CF Account:  (none configured)".to_string()
     };
 
-    let worker_text = format!("Worker Name:  {}_", form.worker_name);
+    let worker_text = if form.focused_field == 0 {
+        format!("Worker Name:  {}_", form.worker_name)
+    } else {
+        format!("Worker Name:  {}", form.worker_name)
+    };
+    let auth_text = if form.focused_field == 1 {
+        let masked: String = "*".repeat(form.auth_token.len());
+        format!("Auth Token:   {}_", masked)
+    } else {
+        let masked: String = "*".repeat(form.auth_token.len());
+        if masked.is_empty() {
+            "Auth Token:   (none)".to_string()
+        } else {
+            format!("Auth Token:   {}", masked)
+        }
+    };
 
     let is_deploying = form.status_message.as_deref() == Some("Deploying...");
 
@@ -44,15 +59,16 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     } else if !has_accounts {
         " CF credentials missing -- add to cloudflare.json".to_string()
     } else {
-        " [Enter] deploy  [</>] account  [Esc] cancel".to_string()
+        " [Tab] switch  [Enter] deploy  [</>] account  [Esc] cancel".to_string()
     };
 
-    let lines: Vec<&str> = vec![&account_label, &worker_text, &hint_str];
+    let lines: Vec<&str> = vec![&account_label, &worker_text, &auth_text, &hint_str];
 
     let constraints = vec![
         Constraint::Length(1), // CF account selector
         Constraint::Length(1), // spacer
         Constraint::Length(1), // worker name
+        Constraint::Length(1), // auth token
         Constraint::Length(1), // spacer
         Constraint::Length(1), // hint
     ];
@@ -69,9 +85,21 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     };
     frame.render_widget(Paragraph::new(account_label).style(acct_style), rows[0]);
 
-    // Worker name (editable)
-    let style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
-    frame.render_widget(Paragraph::new(worker_text).style(style), rows[2]);
+    // Worker name (editable when focused_field == 0)
+    let worker_style = if form.focused_field == 0 {
+        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    frame.render_widget(Paragraph::new(worker_text).style(worker_style), rows[2]);
+
+    // Auth token (editable when focused_field == 1)
+    let auth_style = if form.focused_field == 1 {
+        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    frame.render_widget(Paragraph::new(auth_text).style(auth_style), rows[3]);
 
     // Hint / status
     let hint_style = if is_deploying {
@@ -81,5 +109,5 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         Style::default().fg(Color::DarkGray)
     };
-    frame.render_widget(Paragraph::new(hint_str).style(hint_style), rows[4]);
+    frame.render_widget(Paragraph::new(hint_str).style(hint_style), rows[5]);
 }

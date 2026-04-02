@@ -1,6 +1,7 @@
 export interface Env {
   TUNNEL_REGISTRY: DurableObjectNamespace;
   MODE_REGISTRY: DurableObjectNamespace;
+  AUTH_TOKEN?: string;
 }
 
 export { TunnelRegistry } from "./tunnel-registry";
@@ -40,7 +41,11 @@ export default {
       }
 
       const id = env.TUNNEL_REGISTRY.idFromName(slug);
-      return env.TUNNEL_REGISTRY.get(id).fetch(request);
+      // Pass AUTH_TOKEN via query param — modifying the URL is safe for WS upgrades;
+      // cloning the Request object with new headers is not reliable in CF Workers.
+      const doUrl = new URL(request.url);
+      doUrl.searchParams.set("_rra", env.AUTH_TOKEN ?? "");
+      return env.TUNNEL_REGISTRY.get(id).fetch(new Request(doUrl.toString(), request));
     }
 
     // WebSocket upgrade from TCP client: /__rsrok_tcp__/:tunnelSlug

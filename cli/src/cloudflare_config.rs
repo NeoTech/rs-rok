@@ -91,6 +91,22 @@ impl CloudflareConfig {
     pub fn first(&self) -> Option<&CfAccount> {
         self.accounts.first()
     }
+
+    /// Insert or replace the first account with a matching account_id.
+    /// If no match exists, replaces index 0 (or pushes if empty).
+    pub fn upsert_account(&mut self, account: CfAccount) {
+        if let Some(pos) = self
+            .accounts
+            .iter()
+            .position(|a| a.account_id == account.account_id)
+        {
+            self.accounts[pos] = account;
+        } else if self.accounts.is_empty() {
+            self.accounts.push(account);
+        } else {
+            self.accounts[0] = account;
+        }
+    }
 }
 
 #[cfg(test)]

@@ -8,10 +8,15 @@ fn main() {
         .join("src")
         .join("embedded");
 
-    // Rerun if worker or protocol sources change
+    // Rerun if worker or protocol sources change.
+    // Also watch dist/index.js: when `bun run build:bundle` (re)creates it,
+    // build.rs must rerun to copy the fresh artifacts into src/embedded/.
+    // After copying, build.rs deletes dist/, so Cargo records "file absent" and
+    // only reruns again the next time build:bundle produces a new dist/index.js.
     println!("cargo:rerun-if-changed=../worker/src/");
     println!("cargo:rerun-if-changed=../worker-wasm/src/lib.rs");
     println!("cargo:rerun-if-changed=../protocol/src/lib.rs");
+    println!("cargo:rerun-if-changed=../worker/dist/index.js");
 
     let dist_dir = worker_dir.join("dist");
     let js_target = embedded_dir.join("worker.js");

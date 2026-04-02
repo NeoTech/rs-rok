@@ -63,9 +63,12 @@ struct SubdomainResult {
 }
 
 /// Deploy the embedded Cloudflare Worker and return the public URL.
+/// If `auth_token` is Some and non-empty, it is stored as the `AUTH_TOKEN` secret
+/// on the deployed worker (enforces CLI registration auth).
 pub async fn deploy_worker(
     cf: &CfAccount,
     worker_name: &str,
+    auth_token: Option<&str>,
 ) -> Result<String, DeployError> {
     let client = reqwest::Client::new();
 
@@ -78,10 +81,49 @@ pub async fn deploy_worker(
     // Step 3: Enable workers.dev subdomain for this script
     enable_subdomain(&client, cf, worker_name).await?;
 
-    // Step 4: Get the account's workers.dev subdomain
+    // Step 4: Store AUTH_TOKEN secret if provided
+    if let Some(token) = auth_token {
+        if !token.is_empty() {
+            put_secret(&client, cf, worker_name, "AUTH_TOKEN", token).await?;
+        }
+    }
+
+    // Step 5: Get the account's workers.dev subdomain
     let subdomain = get_subdomain(&client, cf).await?;
 
     Ok(format!("https://{worker_name}.{subdomain}.workers.dev"))
+}
+
+async fn put_secret(
+    client: &reqwest::Client,
+    cf: &CfAccount,
+    worker_name: &str,
+    secret_name: &str,
+    secret_value: &str,
+) -> Result<(), DeployError> {
+    let url = format!(
+        "{CF_API_BASE}/accounts/{}/workers/scripts/{worker_name}/secrets",
+        cf.account_id
+    );
+
+    let resp: CfResponse<serde_json::Value> = client
+        .put(&url)
+        .bearer_auth(&cf.api_token)
+        .json(&serde_json::json!({
+            "name": secret_name,
+            "text": secret_value,
+            "type": "secret_text"
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+
+    if !resp.success {
+        return Err(DeployError::Api { errors: resp.errors });
+    }
+
+    Ok(())
 }
 
 async fn delete_script(

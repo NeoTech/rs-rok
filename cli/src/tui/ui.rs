@@ -44,6 +44,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             Overlay::Profiles => overlays::profiles::draw(frame, area, app),
             Overlay::Deploy => overlays::deploy::draw(frame, area, app),
             Overlay::EndpointTest => overlays::endpoint_test::draw(frame, area, app),
+            Overlay::TunnelManager => overlays::tunnel_manager::draw(frame, area, app),
         }
     }
 }
@@ -52,7 +53,7 @@ fn draw_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let profile_name = &app.settings.active_profile().name;
 
     let keys = Span::styled(
-        " [n] new  [s] settings  [p] profiles  [D] deploy  [t] test  [d] stop  [r] restart  [x] delete  [Tab] focus  [q] quit ",
+        " [n] new  [m] manage  [s] settings  [p] profiles  [D] deploy  [t] test  [d] stop  [r] restart  [x] delete  [Tab] focus  [q] quit ",
         Style::default().fg(Color::DarkGray),
     );
     let profile = Span::styled(

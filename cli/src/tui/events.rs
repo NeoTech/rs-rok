@@ -20,7 +20,7 @@ pub enum Action {
     Quit,
     OpenOverlay(Overlay),
     CloseOverlay,
-    SpawnTunnel(TunnelConfig),
+    SpawnTunnel(TunnelConfig, String),
     StopTunnel(usize),
     StartTunnel(usize),
     DeleteTunnel(usize),
@@ -31,6 +31,7 @@ pub enum Action {
         worker_name: String,
         account_id: String,
         api_token: String,
+        auth_token: Option<String>,
     },
     OpenEndpointTest(usize),
     RunEndpointTest {
@@ -51,6 +52,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             Overlay::Profiles => handle_profiles_key(app, key),
             Overlay::Deploy => handle_deploy_key(app, key),
             Overlay::EndpointTest => handle_endpoint_test_key(app, key),
+            Overlay::TunnelManager => handle_tunnel_manager_key(app, key),
         };
     }
 
@@ -69,6 +71,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             app.profiles_selected = app.settings.active_idx;
             app.new_profile_input = None;
             Action::OpenOverlay(Overlay::Profiles)
+        }
+        KeyCode::Char('m') => {
+            app.tunnel_manager_selected = app.selected_tunnel.min(app.tunnels.len().saturating_sub(1));
+            Action::OpenOverlay(Overlay::TunnelManager)
         }
         KeyCode::Char('d') => {
             if !app.tunnels.is_empty() {
@@ -97,7 +103,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             }
         }
         KeyCode::Char('D') => {
-            app.deploy_form = Some(DeployForm::new());
+            let auth_token = app.settings.active_profile().auth_token.clone().unwrap_or_default();
+            app.deploy_form = Some(DeployForm::new(auth_token));
             Action::OpenOverlay(Overlay::Deploy)
         }
         KeyCode::Char('t') => {
@@ -293,7 +300,7 @@ fn handle_new_tunnel_key(app: &mut App, key: KeyEvent) -> Action {
                 events_tx: None, // Will be set by spawn_tunnel
             };
 
-            Action::SpawnTunnel(config)
+            Action::SpawnTunnel(config, profile.name.clone())
         }
         _ => Action::None,
     }
@@ -513,25 +520,41 @@ fn handle_deploy_key(app: &mut App, key: KeyEvent) -> Action {
 
     match key.code {
         KeyCode::Esc => Action::CloseOverlay,
+        KeyCode::Tab | KeyCode::Down => {
+            form.focused_field = (form.focused_field + 1) % 2;
+            Action::None
+        }
+        KeyCode::Up => {
+            form.focused_field = (form.focused_field + 1) % 2;
+            Action::None
+        }
         KeyCode::Left => {
-            if !form.cf_accounts.is_empty() {
+            if form.focused_field == 0 && !form.cf_accounts.is_empty() {
                 form.selected_account =
                     (form.selected_account + form.cf_accounts.len() - 1) % form.cf_accounts.len();
             }
             Action::None
         }
         KeyCode::Right => {
-            if !form.cf_accounts.is_empty() {
+            if form.focused_field == 0 && !form.cf_accounts.is_empty() {
                 form.selected_account = (form.selected_account + 1) % form.cf_accounts.len();
             }
             Action::None
         }
         KeyCode::Char(c) => {
-            form.worker_name.push(c);
+            if form.focused_field == 0 {
+                form.worker_name.push(c);
+            } else {
+                form.auth_token.push(c);
+            }
             Action::None
         }
         KeyCode::Backspace => {
-            form.worker_name.pop();
+            if form.focused_field == 0 {
+                form.worker_name.pop();
+            } else {
+                form.auth_token.pop();
+            }
             Action::None
         }
         KeyCode::Enter => {
@@ -547,11 +570,17 @@ fn handle_deploy_key(app: &mut App, key: KeyEvent) -> Action {
             let worker_name = form.worker_name.clone();
             let account_id = account.account_id;
             let api_token = account.api_token;
+            let auth_token = if form.auth_token.is_empty() {
+                None
+            } else {
+                Some(form.auth_token.clone())
+            };
 
             Action::DeployWorker {
                 worker_name,
                 account_id,
                 api_token,
+                auth_token,
             }
         }
         _ => Action::None,
@@ -638,6 +667,46 @@ fn handle_endpoint_test_key(app: &mut App, key: KeyEvent) -> Action {
                 .collect();
             form.is_running = true;
             Action::RunEndpointTest { tunnel_idx, method, path, body, headers }
+        }
+        _ => Action::None,
+    }
+}
+// -- Tunnel Manager overlay --
+
+fn handle_tunnel_manager_key(app: &mut App, key: KeyEvent) -> Action {
+    if app.tunnels.is_empty() {
+        if key.code == KeyCode::Esc {
+            return Action::CloseOverlay;
+        }
+        return Action::None;
+    }
+
+    match key.code {
+        KeyCode::Esc => Action::CloseOverlay,
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.tunnel_manager_selected > 0 {
+                app.tunnel_manager_selected -= 1;
+            }
+            Action::None
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.tunnel_manager_selected + 1 < app.tunnels.len() {
+                app.tunnel_manager_selected += 1;
+            }
+            Action::None
+        }
+        KeyCode::Char('x') | KeyCode::Delete => {
+            let idx = app.tunnel_manager_selected;
+            Action::DeleteTunnel(idx)
+        }
+        KeyCode::Char('r') => {
+            let idx = app.tunnel_manager_selected;
+            if let Some(t) = app.tunnels.get(idx) {
+                if t.status == TunnelStatus::Stopped {
+                    return Action::StartTunnel(idx);
+                }
+            }
+            Action::None
         }
         _ => Action::None,
     }
