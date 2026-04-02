@@ -3,9 +3,30 @@
 A Cloudflare-backed reverse tunnel tool. Expose local services behind firewalls
 to the public internet via HTTPS or TCP, similar to ngrok.
 
+## Download
+
+Pre-built binaries are published for every tagged release:
+
+| Platform | File |
+|----------|------|
+| Windows x64 | `rsrok-windows-x64.exe` |
+| Linux x64 | `rsrok-linux-x64` |
+| Linux ARM64 | `rsrok-linux-arm64` |
+| macOS x64 (Intel) | `rsrok-macos-x64` |
+| macOS ARM64 (Apple Silicon) | `rsrok-macos-arm64` |
+| Self-host Docker bundle | `rs-rok-workerd.zip` |
+
+Grab the latest from the [Releases page](../../releases).
+
+On Linux/macOS, mark the binary executable after downloading:
+```bash
+chmod +x rsrok-linux-x64
+./rsrok-linux-x64 --help
+```
+
 ## Architecture
 
-- **CLI** (`rs-rok`): Rust binary that opens a WebSocket tunnel to Cloudflare and
+- **CLI** (`rsrok`): Rust binary that opens a WebSocket tunnel to Cloudflare and
   proxies traffic to a local port. Supports HTTP, HTTPS, and TCP tunnels. The
   Cloudflare Worker is embedded in the binary and can be deployed directly to
   your account.
@@ -16,7 +37,14 @@ to the public internet via HTTPS or TCP, similar to ngrok.
 
 ## Quick Start
 
-### 1. Build the CLI
+### 1. Get the binary
+
+**Option A: Download a pre-built release** (recommended)
+
+Download the binary for your platform from the [Releases page](../../releases)
+and place it on your `$PATH`. On Linux/macOS run `chmod +x rsrok-*` after downloading.
+
+**Option B: Build from source**
 
 ```bash
 # Build the worker bundle first (one-time, or after worker code changes)
@@ -26,8 +54,8 @@ cd worker && bun install && bun run build:bundle && cd ..
 cargo build --release -p rs-rok-cli
 ```
 
-The resulting binary is at `target/release/rs-rok.exe` (Windows) or
-`target/release/rs-rok` (Linux/macOS). It is fully self-contained.
+The resulting binary is at `target/release/rsrok.exe` (Windows) or
+`target/release/rsrok` (Linux/macOS). It is fully self-contained.
 
 ### 2. Create a Cloudflare API Token
 
@@ -45,12 +73,12 @@ the right permissions.
 
 ```bash
 # Store your Cloudflare credentials
-rs-rok config set-cf-credentials \
+rsrok config set-cf-credentials \
   --account-id <your-account-id> \
   --api-token <your-api-token>
 
 # Deploy the embedded Worker to your account
-rs-rok deploy
+rsrok deploy
 ```
 
 On success, the CLI prints the public Worker URL and saves it as your endpoint.
@@ -58,23 +86,23 @@ You can also pass credentials inline or via environment variables:
 
 ```bash
 # Inline flags
-rs-rok deploy --account-id <id> --api-token <token>
+rsrok deploy --account-id <id> --api-token <token>
 
 # Environment variables
-CF_ACCOUNT_ID=<id> CF_API_TOKEN=<token> rs-rok deploy
+CF_ACCOUNT_ID=<id> CF_API_TOKEN=<token> rsrok deploy
 ```
 
 ### 4. Expose a local service
 
 ```bash
 # Expose local port 8080 over HTTP
-rs-rok http 8080
+rsrok http 8080
 
 # Expose with a stable tunnel name
-rs-rok http 8080 --name myapp
+rsrok http 8080 --name myapp
 
 # Expose a local HTTPS service
-rs-rok https 8443
+rsrok https 8443
 ```
 
 ### 5. Expose a local TCP service
@@ -84,20 +112,48 @@ through the Cloudflare tunnel. TCP requires a named tunnel and token-based auth.
 
 ```bash
 # On the server side: expose local TCP port 5432 (e.g. PostgreSQL)
-rs-rok tcp 5432 --name mydb
+rsrok tcp 5432 --name mydb
 # Prints a one-time token, e.g.: TCP tunnel token: abc123...
 
 # On the client side: connect and map to a local port
-rs-rok connect mydb --token abc123... --port 15432
+rsrok connect mydb --token abc123... --port 15432
 
 # Now connect to localhost:15432 as if it were the remote service
 psql -h 127.0.0.1 -p 15432 -U myuser mydb
 ```
 
-The server side (`rs-rok tcp`) generates a single-use token that the client
-(`rs-rok connect`) uses to authenticate. Multiple clients can connect
+The server side (`rsrok tcp`) generates a single-use token that the client
+(`rsrok connect`) uses to authenticate. Multiple clients can connect
 simultaneously, each getting an independent TCP stream multiplexed over the
 WebSocket tunnel.
+
+## Interactive TUI
+
+Running `rsrok` with no arguments in a terminal launches an interactive TUI:
+
+```bash
+rsrok
+```
+
+Key bindings:
+
+| Key | Action |
+|-----|--------|
+| `n` | Open new tunnel form |
+| `m` | Tunnel manager (navigate, restart, delete saved tunnels) |
+| `d` | Stop selected tunnel |
+| `r` | Restart stopped tunnel |
+| `x` | Delete tunnel from list and session file |
+| `s` | Settings (edit profiles and Cloudflare credentials) |
+| `p` | Switch active profile |
+| `D` | Deploy Worker to Cloudflare |
+| `t` | Test endpoint for selected HTTP tunnel |
+| `Tab` | Switch focus between tunnel list and log view |
+| `q` | Quit |
+
+The TUI persists open tunnels to `~/.rs-rok/tunnels.json` and restores them
+automatically on next launch. Tunnels that were running when you quit are
+reconnected; stopped tunnels are shown in the manager but not auto-connected.
 
 ## Self-hosted (Docker)
 
@@ -112,6 +168,8 @@ Cloudflare account.
 
 ### Build and run
 
+If you have Docker, Bun, Rust, and wasm-pack available:
+
 ```bash
 # Build the Worker bundle and normalize the WASM filename
 cd worker && bun run build:workerd
@@ -120,16 +178,26 @@ cd worker && bun run build:workerd
 docker compose up --build
 ```
 
+Alternatively, download `rs-rok-workerd.zip` from the
+[Releases page](../../releases) — it contains the pre-built
+`index.js`, `worker.wasm`, `Dockerfile.workerd`, `docker-compose.yml`,
+and `workerd.capnp`. Unzip and run:
+
+```bash
+unzip rs-rok-workerd.zip
+docker compose -f worker/docker-compose.yml up --build
+```
+
 The Worker is available at `http://localhost:8787`. Durable Object state is
 persisted to a Docker volume (`do-data`).
 
 ### Point the CLI at the local instance
 
 ```bash
-rs-rok config set-endpoint http://localhost:8787
+rsrok config set-endpoint http://localhost:8787
 ```
 
-Then use `rs-rok http`, `rs-rok tcp`, etc. as normal -- traffic routes through
+Then use `rsrok http`, `rsrok tcp`, etc. as normal -- traffic routes through
 the local container instead of Cloudflare.
 
 ### Stop the container
@@ -150,22 +218,23 @@ Settings are stored in `~/.rs-rok/`:
 
 | File | Purpose |
 |------|---------|
-| `settings.json` | Endpoint URL, auth token, default region |
+| `settings.json` | Named profiles: endpoint URL, auth token, default region |
 | `cloudflare.json` | Cloudflare account ID and API token |
+| `tunnels.json` | TUI session: saved tunnels with their last-known state |
 
 ### CLI Commands
 
 ```
-rs-rok http <port>              Expose a local HTTP service
-rs-rok https <port>             Expose a local HTTPS service
-rs-rok tcp <port> --name <name> Expose a local TCP service (named tunnel required)
-rs-rok connect <name> --token <tok> --port <port>
+rsrok http <port>              Expose a local HTTP service
+rsrok https <port>             Expose a local HTTPS service
+rsrok tcp <port> --name <name> Expose a local TCP service (named tunnel required)
+rsrok connect <name> --token <tok> --port <port>
                                 Connect to a TCP tunnel as a client
-rs-rok deploy                   Deploy the Worker to Cloudflare
-rs-rok config show              Print current configuration
-rs-rok config add-token <tok>   Store an auth token
-rs-rok config set-endpoint <url> Set the worker endpoint URL
-rs-rok config set-cf-credentials Store Cloudflare credentials
+rsrok deploy                   Deploy the Worker to Cloudflare
+rsrok config show              Print current configuration
+rsrok config add-token <tok>   Store an auth token
+rsrok config set-endpoint <url> Set the worker endpoint URL
+rsrok config set-cf-credentials Store Cloudflare credentials
 ```
 
 ### Environment Variables

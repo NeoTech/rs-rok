@@ -845,3 +845,108 @@ Changes implemented:
 - `tui/overlays/new_tunnel.rs`: Shows auto-generated name placeholder when name field is empty.
 - `tui/overlays/settings.rs`: Masks CF API Token field.
 - `tui/overlays/profiles.rs`: Uses index-based active profile detection.
+
+---
+
+## Phase 16 -- Tunnel Persistence and Manager Overlay
+
+Purpose: persist the TUI's tunnel list to disk so active tunnels survive a restart,
+and provide a dedicated overlay for managing saved tunnels.
+
+### Definition of Done
+- `~/.rs-rok/tunnels.json` written after every add/delete; contains state field ("running"/"stopped")
+- TUI restores running tunnels automatically on next launch; stopped tunnels shown but not reconnected
+- `m` key opens Tunnel Manager overlay with navigate / delete / restart actions
+- Status bar shows `[m] manage` hint
+
+### Steps
+
+- [x] 16.1 Create `cli/src/saved_tunnels.rs`
+  - `SavedTunnel` struct: profile, tunnel_type, host, port, state (`"running"`/"stopped"`), name, tcp_token
+  - `SavedTunnelType` enum mirroring protocol `TunnelType`
+  - `SavedTunnelState` enum: `Running` (default), `Stopped` (serde snake_case)
+  - `config_path(settings_path) -> PathBuf` -- `~/.rs-rok/tunnels.json`
+  - `load(path) -> Vec<SavedTunnel>` -- returns empty vec on missing/corrupt file
+  - `save(path, tunnels)` -- atomic write via serde_json
+  - `SavedTunnel::to_tunnel_config(&settings) -> Option<TunnelConfig>` -- resolves profile settings
+
+- [x] 16.2 Add persistence to `App`
+  - `TunnelHandle.profile_name: Option<String>` field
+  - `App.saved_tunnels_path: PathBuf` initialised in `App::new()`
+  - `App::persist_tunnels()` -- saves all tunnels (running and stopped) with correct state
+  - `App::spawn_tunnel(config, profile_name)` -- assigns profile_name, calls persist_tunnels() after push
+  - `App::add_stopped_tunnel(config, profile_name)` -- inserts stopped entry (no-op task handle), used for batch restore
+
+- [x] 16.3 Restore saved tunnels on TUI startup
+  - `tui/mod.rs`: load `saved_tunnels.json` before entering event loop
+  - `Running` entries: call `spawn_tunnel` to reconnect
+  - `Stopped` entries: call `add_stopped_tunnel` to show in list without connecting
+  - On quit: call `persist_tunnels()` before `stop_all_tunnels()` so states are written correctly
+
+- [x] 16.4 Create `cli/src/tui/overlays/tunnel_manager.rs`
+  - Popup listing all tunnels with color-coded status (ACTIVE / CONN / STOPPED)
+  - Shows config summary and profile name per row
+  - Keys: up/down/j/k = navigate, `x`/Delete = delete, `r` = restart stopped, Esc = close
+  - Wired via `Action::DeleteTunnel` and `Action::StartTunnel`
+
+- [x] 16.5 Wire Tunnel Manager into TUI shell
+  - `Overlay::TunnelManager` variant added to enum
+  - `m` key opens overlay; `App.tunnel_manager_selected` tracks selection
+  - `events.rs`: `handle_tunnel_manager_key()` dispatches actions
+  - `ui.rs`: renders overlay; status bar updated with `[m] manage`
+
+### Phase 16 Review
+
+- `saved_tunnels.rs` module implements full load/save cycle with state field
+- Stopped tunnels are re-populated on restore via `add_stopped_tunnel()` so they remain visible without reconnecting
+- `persist_tunnels()` writes ALL tunnels; state field distinguishes running vs stopped
+- Final `persist_tunnels()` call on quit preserves correct state before process exit
+- Tunnel Manager overlay provides keyboard-driven management without leaving the TUI
+
+---
+
+## Phase 17 -- GitHub Actions Release Pipeline
+
+Purpose: automate multi-platform binary builds and publish a GitHub Release on every
+version tag, including pre-built binaries and a self-host Docker zip.
+
+### Definition of Done
+- Pushing a `v*.*.*` tag triggers the workflow
+- GitHub Release is created with binaries for Windows x64, Linux x64, Linux ARM64,
+  macOS x64, macOS ARM64, and `rs-rok-workerd.zip`
+- ARM Linux binary compiles against vendored OpenSSL (no host library dependency)
+
+### Steps
+
+- [x] 17.1 Create `.github/workflows/release.yml`
+  - Trigger: `push` to tags matching `v*.*.*`
+  - Global env: `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true` (suppress Node 20 deprecation)
+  - Job `build-worker` (ubuntu-latest): Rust + wasm-pack + Bun; runs `bun run build:workerd`;
+    uploads `worker-dist` artifact; packages `rs-rok-workerd.zip`
+  - Job `build-cli` (5-target matrix): downloads `worker-dist` to `worker/dist/` before cargo build
+  - Job `release`: downloads all artifacts with `merge-multiple: true`, publishes GitHub Release
+
+- [x] 17.2 Matrix targets
+  | Asset | Runner | Target | Cross |
+  |-------|--------|--------|-------|
+  | rsrok-windows-x64.exe | windows-latest | x86_64-pc-windows-msvc | false |
+  | rsrok-linux-x64 | ubuntu-latest | x86_64-unknown-linux-gnu | false |
+  | rsrok-linux-arm64 | ubuntu-latest | aarch64-unknown-linux-gnu | true |
+  | rsrok-macos-x64 | macos-latest | x86_64-apple-darwin | false |
+  | rsrok-macos-arm64 | macos-latest | aarch64-apple-darwin | false |
+
+- [x] 17.3 Fix ARM Linux OpenSSL cross-compilation
+  - `Cross.toml`: pre-build installs `perl` and `make` in cross container (needed to compile vendored OpenSSL)
+  - `cli/Cargo.toml`: `[target.aarch64-unknown-linux-gnu.dependencies]` with `openssl = { version = "0.10", features = ["vendored"] }` -- activates vendoring only for that target; all other targets use system OpenSSL
+
+- [x] 17.4 Fix CI runner issues
+  - `macos-13` deprecated: use `macos-latest` for both macOS targets (ARM runner cross-compiles x86_64)
+  - Node 20 deprecation: `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true` at workflow level
+
+### Phase 17 Review
+
+- Full release pipeline live at `.github/workflows/release.yml`
+- `Cross.toml` at repo root provides ARM Linux container pre-build steps
+- Target-specific OpenSSL dep in `cli/Cargo.toml` avoids affecting Linux/macOS/Windows builds
+- `cargo check -p rs-rok-cli` clean locally after all changes
+- First release tagged as `v0.0.5-alpha`; `v1.0.0` tagged and published
