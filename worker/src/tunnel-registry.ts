@@ -157,8 +157,9 @@ export class TunnelRegistry implements DurableObject {
   }
 
   private async handleCliWsUpgrade(request: Request): Promise<Response> {
-    // Only allow one CLI connection per tunnel
-    if (this.cliSocket && this.cliSocket.readyState === WebSocket.READY_STATE_OPEN) {
+    // Only allow one CLI connection per tunnel — check via hibernation-safe getWebSockets
+    const existing = this.getCliSocket();
+    if (existing) {
       return new Response("Tunnel already has an active CLI connection", { status: 409 });
     }
 

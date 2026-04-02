@@ -4,6 +4,7 @@ mod config;
 mod deploy;
 mod proxy;
 mod tcp_client;
+mod tui;
 mod tunnel;
 mod worker_bundle;
 
@@ -12,25 +13,48 @@ use cli::{Cli, Command, ConfigAction};
 use cloudflare_config::CloudflareConfig;
 use config::Settings;
 use rs_rok_protocol::TunnelType;
+use std::io::IsTerminal;
 use tracing::error;
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
 
-    // Init tracing
+    let config_path = Settings::config_path(cli.config_path.as_deref());
+
+    // No subcommand + interactive TTY -> launch TUI
+    if cli.command.is_none() && std::io::stdout().is_terminal() {
+        if let Err(e) = tui::run(config_path, cli.profile).await {
+            eprintln!("TUI error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    // Init tracing (only for CLI mode — TUI handles its own output)
     let env_filter = tracing_subscriber::EnvFilter::try_new(&cli.log_level)
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
-    let config_path = Settings::config_path(cli.config_path.as_deref());
+    let Some(command) = cli.command else {
+        // Not a TTY and no subcommand — print help
+        use clap::CommandFactory;
+        Cli::command().print_help().ok();
+        std::process::exit(0);
+    };
 
-    match cli.command {
+    match command {
         Command::Config { action } => {
             let mut settings = Settings::load(&config_path);
+            if let Some(ref name) = cli.profile {
+                if !settings.switch_active_by_name(name) {
+                    error!("profile '{}' not found", name);
+                    std::process::exit(1);
+                }
+            }
             match action {
                 ConfigAction::AddToken { token } => {
-                    settings.auth_token = Some(token);
+                    settings.active_profile_mut().auth_token = Some(token);
                     if let Err(e) = settings.save(&config_path) {
                         error!("failed to save config: {e}");
                         std::process::exit(1);
@@ -38,12 +62,12 @@ async fn main() {
                     println!("Token saved to {}", config_path.display());
                 }
                 ConfigAction::Show => {
-                    let json = serde_json::to_string_pretty(&settings)
+                    let json = serde_json::to_string_pretty(&settings.profiles)
                         .expect("failed to serialize settings");
                     println!("{json}");
                 }
                 ConfigAction::SetEndpoint { url } => {
-                    settings.endpoint = url;
+                    settings.active_profile_mut().endpoint = url;
                     if let Err(e) = settings.save(&config_path) {
                         error!("failed to save config: {e}");
                         std::process::exit(1);
@@ -55,11 +79,13 @@ async fn main() {
                     api_token,
                 } => {
                     let cf_path = CloudflareConfig::config_path();
-                    let cf = CloudflareConfig {
+                    let mut cfg = CloudflareConfig::load(&cf_path);
+                    cfg.accounts.push(crate::cloudflare_config::CfAccount {
+                        name: String::new(),
                         account_id,
                         api_token,
-                    };
-                    if let Err(e) = cf.save(&cf_path) {
+                    });
+                    if let Err(e) = cfg.save(&cf_path) {
                         error!("failed to save cloudflare config: {e}");
                         std::process::exit(1);
                     }
@@ -97,6 +123,16 @@ async fn main() {
     }
 }
 
+/// If --profile was passed, switch to that profile (or exit on unknown name).
+fn apply_profile_flag(settings: &mut Settings, profile_name: Option<&str>) {
+    if let Some(name) = profile_name {
+        if !settings.switch_active_by_name(name) {
+            error!("profile '{}' not found", name);
+            std::process::exit(1);
+        }
+    }
+}
+
 async fn start_tunnel(
     tunnel_type: TunnelType,
     port: u16,
@@ -104,17 +140,20 @@ async fn start_tunnel(
     name: Option<String>,
     config_path: &std::path::Path,
 ) {
-    let settings = Settings::load(config_path);
-    let auth_token = settings.auth_token.unwrap_or_default();
+    let mut settings = Settings::load(config_path);
+    apply_profile_flag(&mut settings, None);
+    let profile = settings.active_profile();
+    let auth_token = profile.auth_token.clone().unwrap_or_default();
     let local_addr = format!("{host}:{port}");
 
     let tunnel_config = tunnel::TunnelConfig {
-        endpoint: settings.endpoint,
+        endpoint: profile.endpoint.clone(),
         auth_token,
         tunnel_type,
         local_addr,
         name,
         tcp_token: None,
+        events_tx: None,
     };
 
     if let Err(e) = tunnel::run(tunnel_config).await {
@@ -131,8 +170,10 @@ async fn start_tcp_tunnel(
 ) {
     use rand::Rng;
 
-    let settings = Settings::load(config_path);
-    let auth_token = settings.auth_token.unwrap_or_default();
+    let mut settings = Settings::load(config_path);
+    apply_profile_flag(&mut settings, None);
+    let profile = settings.active_profile();
+    let auth_token = profile.auth_token.clone().unwrap_or_default();
     let local_addr = format!("{host}:{port}");
 
     // Generate a random 32-char hex token
@@ -147,12 +188,13 @@ async fn start_tcp_tunnel(
     println!();
 
     let tunnel_config = tunnel::TunnelConfig {
-        endpoint: settings.endpoint,
+        endpoint: profile.endpoint.clone(),
         auth_token,
         tunnel_type: TunnelType::Tcp,
         local_addr,
         name,
         tcp_token: Some(tcp_token),
+        events_tx: None,
     };
 
     if let Err(e) = tunnel::run(tunnel_config).await {
@@ -168,10 +210,11 @@ async fn start_tcp_client(
     host: &str,
     config_path: &std::path::Path,
 ) {
-    let settings = Settings::load(config_path);
+    let mut settings = Settings::load(config_path);
+    apply_profile_flag(&mut settings, None);
 
     let client_config = tcp_client::TcpClientConfig {
-        endpoint: settings.endpoint,
+        endpoint: settings.active_profile().endpoint.clone(),
         slug: slug.to_string(),
         token: token.to_string(),
         local_addr: format!("{host}:{port}"),
@@ -190,7 +233,9 @@ async fn deploy_worker(
     config_path: &std::path::Path,
 ) {
     let cf_path = CloudflareConfig::config_path();
-    let mut cf = CloudflareConfig::load(&cf_path).unwrap_or(CloudflareConfig {
+    let cf_cfg = CloudflareConfig::load(&cf_path);
+    let mut cf = cf_cfg.first().cloned().unwrap_or(crate::cloudflare_config::CfAccount {
+        name: String::new(),
         account_id: String::new(),
         api_token: String::new(),
     });
@@ -220,13 +265,14 @@ async fn deploy_worker(
             println!("URL: {url}");
 
             // Save credentials for future deploys
-            if let Err(e) = cf.save(&cf_path) {
+            let save_cfg = CloudflareConfig { accounts: vec![cf.clone()] };
+            if let Err(e) = save_cfg.save(&cf_path) {
                 error!("warning: could not save credentials: {e}");
             }
 
-            // Update endpoint in settings
+            // Update endpoint in active profile
             let mut settings = Settings::load(config_path);
-            settings.endpoint = url.clone();
+            settings.active_profile_mut().endpoint = url.clone();
             if let Err(e) = settings.save(config_path) {
                 error!("warning: could not update endpoint in settings: {e}");
             } else {

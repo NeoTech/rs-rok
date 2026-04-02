@@ -2,10 +2,23 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tracing::debug;
 
+/// A single Cloudflare account entry.
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct CloudflareConfig {
+pub struct CfAccount {
+    #[serde(default)]
+    pub name: String,
     pub account_id: String,
     pub api_token: String,
+}
+
+/// List of Cloudflare accounts stored in `~/.rs-rok/cloudflare.json`.
+///
+/// On disk the file is a JSON array: `[{name, account_id, api_token}, ...]`.
+/// For backward compatibility, a single object `{account_id, api_token}` is
+/// also accepted and migrated to the array format on next save.
+#[derive(Debug, Clone)]
+pub struct CloudflareConfig {
+    pub accounts: Vec<CfAccount>,
 }
 
 impl CloudflareConfig {
@@ -15,49 +28,68 @@ impl CloudflareConfig {
         home.join(".rs-rok").join("cloudflare.json")
     }
 
-    /// Load from disk, applying env var overrides (`CF_ACCOUNT_ID`, `CF_API_TOKEN`).
-    /// Returns `None` if file doesn't exist and env vars aren't set.
-    pub fn load(path: &Path) -> Option<Self> {
-        let mut config: Option<Self> = if path.exists() {
-            let data = std::fs::read_to_string(path).ok()?;
-            serde_json::from_str(&data).ok()
-        } else {
-            None
-        };
+    /// Load from disk. Supports both array and single-object formats.
+    /// Applies env var overrides (`CF_ACCOUNT_ID`, `CF_API_TOKEN`) to the first account.
+    pub fn load(path: &Path) -> Self {
+        let mut cfg = Self { accounts: Vec::new() };
 
+        if path.exists() {
+            if let Ok(data) = std::fs::read_to_string(path) {
+                let trimmed = data.trim();
+                if trimmed.starts_with('[') {
+                    if let Ok(accounts) = serde_json::from_str::<Vec<CfAccount>>(trimmed) {
+                        cfg.accounts = accounts;
+                    }
+                } else if let Ok(single) = serde_json::from_str::<CfAccount>(trimmed) {
+                    cfg.accounts = vec![single];
+                    // Migrate to array format
+                    let _ = cfg.save(path);
+                }
+            }
+        }
+
+        // Env var overrides on the first account
         let env_account = std::env::var("CF_ACCOUNT_ID").ok();
         let env_token = std::env::var("CF_API_TOKEN").ok();
 
-        match (&mut config, env_account, env_token) {
-            (Some(c), Some(id), _) => {
-                debug!("overriding account_id from CF_ACCOUNT_ID env var");
-                c.account_id = id;
-            }
-            (Some(c), _, Some(tok)) => {
-                debug!("overriding api_token from CF_API_TOKEN env var");
-                c.api_token = tok;
-            }
-            (None, Some(id), Some(tok)) => {
+        match (env_account, env_token) {
+            (Some(id), Some(tok)) if cfg.accounts.is_empty() => {
                 debug!("using CF_ACCOUNT_ID + CF_API_TOKEN env vars");
-                config = Some(Self {
+                cfg.accounts.push(CfAccount {
+                    name: "env".to_string(),
                     account_id: id,
                     api_token: tok,
                 });
             }
+            (id_opt, tok_opt) if !cfg.accounts.is_empty() => {
+                if let Some(id) = id_opt {
+                    debug!("overriding first account_id from CF_ACCOUNT_ID env var");
+                    cfg.accounts[0].account_id = id;
+                }
+                if let Some(tok) = tok_opt {
+                    debug!("overriding first api_token from CF_API_TOKEN env var");
+                    cfg.accounts[0].api_token = tok;
+                }
+            }
             _ => {}
         }
 
-        config
+        cfg
     }
 
-    /// Save to disk, creating the parent directory if needed.
+    /// Save to disk as a JSON array.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let json = serde_json::to_string_pretty(self)
+        let json = serde_json::to_string_pretty(&self.accounts)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         std::fs::write(path, json)
+    }
+
+    /// Get the first account (convenience for single-account usage).
+    pub fn first(&self) -> Option<&CfAccount> {
+        self.accounts.first()
     }
 }
 
@@ -71,23 +103,39 @@ mod tests {
         let path = dir.path().join("cloudflare.json");
 
         let config = CloudflareConfig {
-            account_id: "abc123".into(),
-            api_token: "tok456".into(),
+            accounts: vec![CfAccount {
+                name: "test".into(),
+                account_id: "abc123".into(),
+                api_token: "tok456".into(),
+            }],
         };
         config.save(&path).unwrap();
 
-        let loaded = CloudflareConfig::load(&path).expect("should load");
-        assert_eq!(loaded.account_id, "abc123");
-        assert_eq!(loaded.api_token, "tok456");
+        let loaded = CloudflareConfig::load(&path);
+        assert_eq!(loaded.accounts.len(), 1);
+        assert_eq!(loaded.accounts[0].account_id, "abc123");
+        assert_eq!(loaded.accounts[0].api_token, "tok456");
+        assert_eq!(loaded.accounts[0].name, "test");
     }
 
     #[test]
-    fn load_missing_file_returns_none() {
+    fn load_legacy_single_object() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cloudflare.json");
+        std::fs::write(&path, r#"{"account_id":"abc","api_token":"tok"}"#).unwrap();
+
+        let loaded = CloudflareConfig::load(&path);
+        assert_eq!(loaded.accounts.len(), 1);
+        assert_eq!(loaded.accounts[0].account_id, "abc");
+    }
+
+    #[test]
+    fn load_missing_file_returns_empty() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nonexistent.json");
-        // Clear env vars to ensure they don't interfere
         std::env::remove_var("CF_ACCOUNT_ID");
         std::env::remove_var("CF_API_TOKEN");
-        assert!(CloudflareConfig::load(&path).is_none());
+        let loaded = CloudflareConfig::load(&path);
+        assert!(loaded.accounts.is_empty());
     }
 }

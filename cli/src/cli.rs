@@ -11,8 +11,12 @@ pub struct Cli {
     #[arg(long = "log", global = true, default_value = "info")]
     pub log_level: String,
 
+    /// Select a named profile from settings.json
+    #[arg(long = "profile", global = true)]
+    pub profile: Option<String>,
+
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Subcommand, Debug)]

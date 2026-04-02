@@ -287,6 +287,7 @@ fn spawn_local_tcp_bridge(
     cmd_tx
 }
 
+#[derive(Clone)]
 pub struct TunnelConfig {
     pub endpoint: String,
     pub auth_token: String,
@@ -295,6 +296,8 @@ pub struct TunnelConfig {
     pub name: Option<String>,
     /// TCP shared secret: the server validates incoming TcpOpen tokens.
     pub tcp_token: Option<String>,
+    /// Optional channel to send tunnel lifecycle events to the TUI.
+    pub events_tx: Option<mpsc::UnboundedSender<crate::tui::events::TunnelEvent>>,
 }
 
 /// Run the tunnel with automatic reconnection via exponential backoff.
@@ -321,11 +324,23 @@ pub async fn run(config: TunnelConfig) -> Result<(), Box<dyn std::error::Error +
             Ok(()) => return Ok(()),
             Err(e) => {
                 let msg = e.to_string();
-                if msg.contains("409") {
-                    eprintln!("error: {msg}");
+                // Fatal server errors (4xx): don't retry, surface to TUI and exit
+                let is_fatal = msg.contains("409") || msg.contains("401")
+                    || msg.contains("403") || msg.contains("server error (4");
+                if is_fatal {
+                    if config.events_tx.is_none() {
+                        eprintln!("error: {msg}");
+                    } else if let Some(tx) = &config.events_tx {
+                        let _ = tx.send(crate::tui::events::TunnelEvent::Error(msg));
+                    }
                     return Err(e);
                 }
                 warn!("tunnel disconnected: {msg}, reconnecting...");
+                if let Some(tx) = &config.events_tx {
+                    let _ = tx.send(crate::tui::events::TunnelEvent::Disconnected {
+                        reason: format!("disconnected, reconnecting: {msg}"),
+                    });
+                }
             }
         }
 
@@ -346,7 +361,15 @@ async fn connect_and_run(
     let tunnel_id = *uuid::Uuid::new_v4().as_bytes();
 
     let tunnel_slug = match &config.name {
-        Some(name) => name.clone(),
+        Some(name) => {
+            // Strip surrounding slashes — they break the URL path matching on the server
+            let trimmed = name.trim_matches('/');
+            if trimmed.is_empty() {
+                "__root__".to_string()
+            } else {
+                trimmed.to_string()
+            }
+        }
         None => "__root__".to_string(),
     };
 
@@ -418,18 +441,26 @@ async fn connect_and_run(
         }
     };
 
-    // Print status banner
-    let local_scheme = match config.tunnel_type {
-        TunnelType::Http => "http",
-        TunnelType::Https => "https",
-        TunnelType::Tcp => "tcp",
-    };
-    println!();
-    println!("rs-rok                                (Ctrl+C to quit)");
-    println!();
-    println!("Tunnel:     {public_url}");
-    println!("Forwarding: {local_scheme}://{}", config.local_addr);
-    println!();
+    // Print status banner (suppressed in TUI mode; TunnelEvent::Connected is sent instead)
+    if config.events_tx.is_some() {
+        if let Some(tx) = &config.events_tx {
+            let _ = tx.send(crate::tui::events::TunnelEvent::Connected {
+                url: public_url.clone(),
+            });
+        }
+    } else {
+        let local_scheme = match config.tunnel_type {
+            TunnelType::Http => "http",
+            TunnelType::Https => "https",
+            TunnelType::Tcp => "tcp",
+        };
+        println!();
+        println!("rs-rok                                (Ctrl+C to quit)");
+        println!();
+        println!("Tunnel:     {public_url}");
+        println!("Forwarding: {local_scheme}://{}", config.local_addr);
+        println!();
+    }
 
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Frame>();
     let mut ws_sessions: HashMap<u32, mpsc::UnboundedSender<LocalWsCommand>> = HashMap::new();
@@ -466,6 +497,23 @@ async fn connect_and_run(
                         match frame {
                             Frame::Request { request_id, .. } => {
                                 debug!(request_id, "received REQUEST, forwarding to local service");
+                                // Capture method/path before moving the frame into the spawn
+                                let (method_str, path_str) = if let Frame::Request { ref method, ref url, .. } = frame {
+                                    let m = match method {
+                                        rs_rok_protocol::Method::Get     => "GET",
+                                        rs_rok_protocol::Method::Post    => "POST",
+                                        rs_rok_protocol::Method::Put     => "PUT",
+                                        rs_rok_protocol::Method::Delete  => "DELETE",
+                                        rs_rok_protocol::Method::Patch   => "PATCH",
+                                        rs_rok_protocol::Method::Head    => "HEAD",
+                                        rs_rok_protocol::Method::Options => "OPTIONS",
+                                        rs_rok_protocol::Method::Connect => "CONNECT",
+                                        rs_rok_protocol::Method::Trace   => "TRACE",
+                                    };
+                                    (m, url.clone())
+                                } else {
+                                    ("GET", String::new())
+                                };
                                 let request_frame = frame;
                                 let out_tx = out_tx.clone();
                                 let local_addr = config.local_addr.clone();
@@ -473,9 +521,20 @@ async fn connect_and_run(
                                     TunnelType::Http | TunnelType::Tcp => ForwardScheme::Http,
                                     TunnelType::Https => ForwardScheme::Https,
                                 };
+                                let events_tx = config.events_tx.clone();
+                                let req_start = std::time::Instant::now();
                                 tokio::spawn(async move {
                                     match proxy::forward_request(&request_frame, &local_addr, scheme, &out_tx).await {
                                         Ok(Some(resp)) => {
+                                            if let Some(ref tx) = events_tx {
+                                                let status = if let Frame::Response { status, .. } = &resp { *status } else { 0 };
+                                                let _ = tx.send(crate::tui::events::TunnelEvent::Request {
+                                                    method: method_str.to_string(),
+                                                    path: path_str,
+                                                    status,
+                                                    latency_ms: req_start.elapsed().as_millis() as u64,
+                                                });
+                                            }
                                             let _ = out_tx.send(resp);
                                         }
                                         Ok(None) => {
@@ -618,6 +677,11 @@ async fn connect_and_run(
                                 code, message, ..
                             } => {
                                 error!("received ERROR frame ({code}): {message}");
+                                if let Some(tx) = &config.events_tx {
+                                    let _ = tx.send(crate::tui::events::TunnelEvent::Error(
+                                        format!("Server error ({code}): {message}"),
+                                    ));
+                                }
                             }
                             other => {
                                 debug!("ignoring unexpected frame type: {:?}", other.frame_type());

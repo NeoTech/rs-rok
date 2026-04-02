@@ -1,4 +1,4 @@
-use crate::cloudflare_config::CloudflareConfig;
+use crate::cloudflare_config::CfAccount;
 use crate::worker_bundle;
 use reqwest::multipart;
 use serde::Deserialize;
@@ -64,26 +64,58 @@ struct SubdomainResult {
 
 /// Deploy the embedded Cloudflare Worker and return the public URL.
 pub async fn deploy_worker(
-    cf: &CloudflareConfig,
+    cf: &CfAccount,
     worker_name: &str,
 ) -> Result<String, DeployError> {
     let client = reqwest::Client::new();
 
-    // Step 1: Upload the Worker script + WASM via multipart PUT
+    // Step 1: Delete any existing script so we start tag-fresh (ignore 404)
+    delete_script(&client, cf, worker_name).await?;
+
+    // Step 2: Upload the Worker script + WASM via multipart PUT
     upload_script(&client, cf, worker_name).await?;
 
-    // Step 2: Enable workers.dev subdomain for this script
+    // Step 3: Enable workers.dev subdomain for this script
     enable_subdomain(&client, cf, worker_name).await?;
 
-    // Step 3: Get the account's workers.dev subdomain
+    // Step 4: Get the account's workers.dev subdomain
     let subdomain = get_subdomain(&client, cf).await?;
 
     Ok(format!("https://{worker_name}.{subdomain}.workers.dev"))
 }
 
+async fn delete_script(
+    client: &reqwest::Client,
+    cf: &CfAccount,
+    worker_name: &str,
+) -> Result<(), DeployError> {
+    let url = format!(
+        "{CF_API_BASE}/accounts/{}/workers/scripts/{worker_name}",
+        cf.account_id
+    );
+
+    let resp = client
+        .delete(&url)
+        .bearer_auth(&cf.api_token)
+        .send()
+        .await?;
+
+    // 404 means it didn't exist — that's fine, we wanted it gone anyway
+    if resp.status().as_u16() == 404 {
+        return Ok(());
+    }
+
+    let body: CfResponse<serde_json::Value> = resp.json().await?;
+    if !body.success {
+        return Err(DeployError::Api { errors: body.errors });
+    }
+
+    Ok(())
+}
+
 async fn upload_script(
     client: &reqwest::Client,
-    cf: &CloudflareConfig,
+    cf: &CfAccount,
     worker_name: &str,
 ) -> Result<(), DeployError> {
     let metadata = serde_json::json!({
@@ -103,10 +135,13 @@ async fn upload_script(
             }
         ],
         "migrations": {
-            "old_tag": "v1",
-            "new_tag": "v1",
-            "steps": []
-        }
+                "new_tag": "v1",
+                "steps": [
+                    {
+                        "new_classes": ["TunnelRegistry", "ModeRegistry"]
+                    }
+                ]
+            }
     });
 
     let form = multipart::Form::new()
@@ -151,7 +186,7 @@ async fn upload_script(
 
 async fn enable_subdomain(
     client: &reqwest::Client,
-    cf: &CloudflareConfig,
+    cf: &CfAccount,
     worker_name: &str,
 ) -> Result<(), DeployError> {
     let url = format!(
@@ -177,7 +212,7 @@ async fn enable_subdomain(
 
 async fn get_subdomain(
     client: &reqwest::Client,
-    cf: &CloudflareConfig,
+    cf: &CfAccount,
 ) -> Result<String, DeployError> {
     let url = format!(
         "{CF_API_BASE}/accounts/{}/workers/subdomain",
