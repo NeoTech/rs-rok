@@ -32,5 +32,10 @@ reqwest = { version = "0.12", features = ["json", "multipart", "blocking"] }
 ratatui = "0.29"
 crossterm = "0.28"
 
+# Vendor OpenSSL from source when cross-compiling for ARM Linux.
+# Other targets use the system/platform TLS (native-tls) and don't need this.
+[target.aarch64-unknown-linux-gnu.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
+
 [dev-dependencies]
 tempfile = "3"

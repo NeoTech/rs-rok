@@ -1270,6 +1270,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
+name = "openssl-src"
+version = "300.5.5+3.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f1787d533e03597a7934fd0a765f0d28e94ecc5fb7789f8053b1e699a56f709"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "openssl-sys"
 version = "0.9.112"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1277,6 +1286,7 @@ checksum = "57d55af3b3e226502be1526dfdba67ab0e9c96fc293004e79576b2b9edb0dbdb"
 dependencies = [
  "cc",
  "libc",
+ "openssl-src",
  "pkg-config",
  "vcpkg",
 ]
@@ -1574,7 +1584,7 @@ dependencies = [
 
 [[package]]
 name = "rs-rok-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "clap",
  "crossterm",
@@ -1585,6 +1595,7 @@ dependencies = [
  "hyper-tls",
  "hyper-util",
  "native-tls",
+ "openssl",
  "rand",
  "ratatui",
  "reqwest",
@@ -1602,7 +1613,7 @@ dependencies = [
 
 [[package]]
 name = "rs-rok-mock-service-http"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "clap",
@@ -1615,7 +1626,7 @@ dependencies = [
 
 [[package]]
 name = "rs-rok-mock-service-https"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "axum-server",
@@ -1632,7 +1643,7 @@ dependencies = [
 
 [[package]]
 name = "rs-rok-mock-service-tcp"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "clap",
  "tokio",
@@ -1642,11 +1653,11 @@ dependencies = [
 
 [[package]]
 name = "rs-rok-protocol"
-version = "0.1.0"
+version = "1.0.0"
 
 [[package]]
 name = "rs-rok-worker-wasm"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "js-sys",
  "rs-rok-protocol",
