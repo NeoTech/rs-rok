@@ -3,6 +3,8 @@
 A Cloudflare-backed reverse tunnel tool. Expose local services behind firewalls
 to the public internet via HTTPS or TCP, similar to ngrok.
 
+![Example of Rsrok](./example.png)
+
 ## Download
 
 Pre-built binaries are published for every tagged release:

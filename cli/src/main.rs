@@ -25,6 +25,24 @@ async fn main() {
 
     // No subcommand + interactive TTY -> launch TUI
     if cli.command.is_none() && std::io::stdout().is_terminal() {
+        #[cfg(windows)]
+        if std::env::var_os("MSYSTEM").is_some()
+            || std::env::var("TERM_PROGRAM").as_deref() == Ok("mintty")
+        {
+            eprintln!("rsrok TUI does not work in Git Bash / mintty.");
+            eprintln!();
+            eprintln!("Options:");
+            eprintln!("  1. Run in Windows Terminal, PowerShell, or Command Prompt (recommended)");
+            eprintln!("  2. Prefix with winpty (ships with Git for Windows):");
+            eprintln!("       winpty rsrok");
+            eprintln!("  3. Enable ConPTY in mintty by adding this to ~/.bashrc:");
+            eprintln!("       export MSYS=enable_pcon");
+            eprintln!("     then restart Git Bash (requires mintty >= 3.0)");
+            eprintln!();
+            eprintln!("Note: CLI subcommands still work from Git Bash: rsrok http, rsrok tcp, ...");
+            std::process::exit(1);
+        }
+
         if let Err(e) = tui::run(config_path, cli.profile).await {
             eprintln!("TUI error: {e}");
             std::process::exit(1);
